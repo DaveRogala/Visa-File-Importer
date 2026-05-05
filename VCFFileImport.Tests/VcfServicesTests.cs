@@ -1,6 +1,7 @@
 using GenericRepositories.Interfaces;
 using MagellanFileServices.Contracts;
 using MagellanFileServices.Models;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Configuration.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -15,12 +16,6 @@ using VCFFileImport.Services;
 
 namespace VCFFileImport.Tests;
 
-// ASSUMPTIONS:
-//   1. ObjectResult<T> has a public parameterless constructor and settable
-//      ObjectResults / Errors properties (object-initialiser syntax used throughout).
-//   2. IGenericRepository.AddAsync returns Task. If it returns Task<TEntity>,
-//      change Returns(Task.CompletedTask) to ReturnsAsync(new ImportFile()).
-
 public class VcfServicesTests : IDisposable
 {
     private readonly Mock<IGenericRepository<ImportFile, VcfContext, int>> _repoMock;
@@ -34,14 +29,22 @@ public class VcfServicesTests : IDisposable
         _tempDir          = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
         Directory.CreateDirectory(_tempDir);
 
+        // Safe defaults — FindFirstAsync returns null (new file), AddAsync/SaveChangesAsync succeed
         _repoMock
             .Setup(r => r.FindFirstAsync(
                 It.IsAny<Expression<Func<ImportFile, bool>>>(),
-                It.IsAny<Func<IQueryable<ImportFile>, IOrderedQueryable<ImportFile>>>()))
+                It.IsAny<Func<IQueryable<ImportFile>, IOrderedQueryable<ImportFile>>>(),
+                It.IsAny<QueryTrackingBehavior>(),
+                It.IsAny<CancellationToken>()))
             .ReturnsAsync((ImportFile?)null);
 
-        _repoMock.Setup(r => r.AddAsync(It.IsAny<ImportFile>())).Returns(Task.CompletedTask);
-        _repoMock.Setup(r => r.SaveChangesAsync()).ReturnsAsync(1);
+        _repoMock
+            .Setup(r => r.AddAsync(It.IsAny<ImportFile>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ImportFile());
+
+        _repoMock
+            .Setup(r => r.SaveChangesAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
     }
 
     public void Dispose()
@@ -99,13 +102,17 @@ public class VcfServicesTests : IDisposable
         CompanyName                   = "Acme Corp"
     };
 
+    // IFileServices.GetDataFromFile overload used by VcfServices:
+    //   GetDataFromFile<T>(filePath, encoding, rowsToSkip, delimiter = ",", fixUnescapedQuotes = false)
+    // All 5 params must be specified in Moq expressions.
     private void SetupGetData(IEnumerable<VcfTransactionDto> rows, List<string>? parseErrors = null) =>
         _fileServicesMock
             .Setup(f => f.GetDataFromFile<VcfTransactionDto>(
                 It.IsAny<string>(),
-                It.Is<Encoding>(e => e == Encoding.UTF8),
-                0,
-                true))
+                It.IsAny<Encoding>(),
+                It.IsAny<int>(),
+                It.IsAny<string>(),
+                It.IsAny<bool>()))
             .Returns(new ObjectResult<VcfTransactionDto>
             {
                 ObjectResults = rows.ToList(),
@@ -119,22 +126,12 @@ public class VcfServicesTests : IDisposable
         return path;
     }
 
-    private void CaptureAddAsync(ref VcfTransaction? captured)
-    {
-        VcfTransaction? local = null;
-        _repoMock
-            .Setup(r => r.AddAsync(It.IsAny<ImportFile>()))
-            .Callback<ImportFile>(f => local = f.ImportFileVcfTransactions.FirstOrDefault()?.VcfTransaction)
-            .Returns(Task.CompletedTask);
-        captured = local;
-    }
-
     // -----------------------------------------------------------------------
     // Constructor
     // -----------------------------------------------------------------------
 
     [Fact]
-    public void Constructor_NullOrMissingBasePath_ThrowsVcfConfigurationException()
+    public void Constructor_MissingBasePath_ThrowsVcfConfigurationException()
     {
         IConfiguration empty = new ConfigurationBuilder()
             .Add(new MemoryConfigurationSource
@@ -196,15 +193,15 @@ public class VcfServicesTests : IDisposable
         WriteCsvFile("data.csv");
         File.WriteAllText(Path.Combine(_tempDir, "readme.txt"),  "ignore");
         File.WriteAllText(Path.Combine(_tempDir, "archive.zip"), "ignore");
-
         SetupGetData([ValidDto()]);
-        using VcfServices sut = BuildSut();
 
+        using VcfServices sut = BuildSut();
         await sut.ProcessFileAsync();
 
         _fileServicesMock.Verify(
             f => f.GetDataFromFile<VcfTransactionDto>(
-                It.IsAny<string>(), It.IsAny<Encoding>(), It.IsAny<int>(), It.IsAny<bool>()),
+                It.IsAny<string>(), It.IsAny<Encoding>(),
+                It.IsAny<int>(), It.IsAny<string>(), It.IsAny<bool>()),
             Times.Once);
     }
 
@@ -227,12 +224,8 @@ public class VcfServicesTests : IDisposable
             Times.Once);
         _fileServicesMock.Verify(
             f => f.HandleFileError(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()),
-            Times.Never);
-        _fileServicesMock.Verify(
-            f => f.HandleFileError(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<string>(), It.IsAny<List<string>>()),
+                It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<List<string>?>()),
             Times.Never);
     }
 
@@ -251,7 +244,9 @@ public class VcfServicesTests : IDisposable
         _fileServicesMock.Verify(
             f => f.HandleFileSuccess(_tempDir, It.IsAny<string>(), It.IsAny<string>()),
             Times.Exactly(3));
-        _repoMock.Verify(r => r.AddAsync(It.IsAny<ImportFile>()), Times.Exactly(3));
+        _repoMock.Verify(
+            r => r.AddAsync(It.IsAny<ImportFile>(), It.IsAny<CancellationToken>()),
+            Times.Exactly(3));
     }
 
     // -----------------------------------------------------------------------
@@ -266,7 +261,9 @@ public class VcfServicesTests : IDisposable
         _repoMock
             .Setup(r => r.FindFirstAsync(
                 It.IsAny<Expression<Func<ImportFile, bool>>>(),
-                It.IsAny<Func<IQueryable<ImportFile>, IOrderedQueryable<ImportFile>>>()))
+                It.IsAny<Func<IQueryable<ImportFile>, IOrderedQueryable<ImportFile>>>(),
+                It.IsAny<QueryTrackingBehavior>(),
+                It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ImportFile { ImportFileName = "already.csv", ArchiveFileName = "already.csv" });
 
         using VcfServices sut = BuildSut();
@@ -278,14 +275,16 @@ public class VcfServicesTests : IDisposable
                 _tempDir,
                 "already.csv",
                 It.Is<string>(m => m.Contains("already imported.")),
-                It.IsAny<string>()),
+                It.IsAny<string>(),
+                null),              // no errors list when reporting duplicates
             Times.Once);
         _fileServicesMock.Verify(
             f => f.HandleFileSuccess(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()),
             Times.Never);
         _fileServicesMock.Verify(
             f => f.GetDataFromFile<VcfTransactionDto>(
-                It.IsAny<string>(), It.IsAny<Encoding>(), It.IsAny<int>(), It.IsAny<bool>()),
+                It.IsAny<string>(), It.IsAny<Encoding>(),
+                It.IsAny<int>(), It.IsAny<string>(), It.IsAny<bool>()),
             Times.Never);
     }
 
@@ -294,7 +293,7 @@ public class VcfServicesTests : IDisposable
     // -----------------------------------------------------------------------
 
     [Fact]
-    public async Task ProcessFileAsync_GetDataFromFile_AlwaysPassesFixUnescapedQuotesTrue()
+    public async Task ProcessFileAsync_GetDataFromFile_PassesFixUnescapedQuotesTrueAndRowsToSkipZero()
     {
         string expectedPath = Path.Combine(_tempDir, "quotes.csv");
         WriteCsvFile("quotes.csv");
@@ -303,8 +302,9 @@ public class VcfServicesTests : IDisposable
         using VcfServices sut = BuildSut();
         await sut.ProcessFileAsync();
 
+        // Verify the exact args passed — rowsToSkip=0 and fixUnescapedQuotes=true
         _fileServicesMock.Verify(
-            f => f.GetDataFromFile<VcfTransactionDto>(expectedPath, Encoding.UTF8, 0, true),
+            f => f.GetDataFromFile<VcfTransactionDto>(expectedPath, Encoding.UTF8, 0, ",", true),
             Times.Once);
     }
 
@@ -317,9 +317,10 @@ public class VcfServicesTests : IDisposable
 
         VcfTransaction? captured = null;
         _repoMock
-            .Setup(r => r.AddAsync(It.IsAny<ImportFile>()))
-            .Callback<ImportFile>(f => captured = f.ImportFileVcfTransactions.First().VcfTransaction)
-            .Returns(Task.CompletedTask);
+            .Setup(r => r.AddAsync(It.IsAny<ImportFile>(), It.IsAny<CancellationToken>()))
+            .Callback<ImportFile, CancellationToken>((f, _) =>
+                captured = f.ImportFileVcfTransactions.First().VcfTransaction)
+            .ReturnsAsync(new ImportFile());
 
         using VcfServices sut = BuildSut();
         bool result = await sut.ProcessFileAsync();
@@ -337,15 +338,13 @@ public class VcfServicesTests : IDisposable
     public async Task ProcessFileAsync_OneBadRow_SkipsBadRowSavesRemainingAndReturnsFalse()
     {
         WriteCsvFile("partial.csv");
-
-        VcfTransactionDto bad = ValidDto() with { BillingAmount = "NOT_A_NUMBER" };
-        SetupGetData([ValidDto(), bad, ValidDto()]);
+        SetupGetData([ValidDto(), ValidDto() with { BillingAmount = "NOT_A_NUMBER" }, ValidDto()]);
 
         ImportFile? savedFile = null;
         _repoMock
-            .Setup(r => r.AddAsync(It.IsAny<ImportFile>()))
-            .Callback<ImportFile>(f => savedFile = f)
-            .Returns(Task.CompletedTask);
+            .Setup(r => r.AddAsync(It.IsAny<ImportFile>(), It.IsAny<CancellationToken>()))
+            .Callback<ImportFile, CancellationToken>((f, _) => savedFile = f)
+            .ReturnsAsync(new ImportFile());
 
         using VcfServices sut = BuildSut();
         bool result = await sut.ProcessFileAsync();
@@ -356,7 +355,7 @@ public class VcfServicesTests : IDisposable
         _fileServicesMock.Verify(
             f => f.HandleFileError(
                 _tempDir, "partial.csv", It.IsAny<string>(), It.IsAny<string>(),
-                It.Is<List<string>>(errs => errs.Count >= 1)),
+                It.Is<List<string>?>(errs => errs != null && errs.Count >= 1)),
             Times.Once);
     }
 
@@ -364,7 +363,6 @@ public class VcfServicesTests : IDisposable
     public async Task ProcessFileAsync_AllRowsBad_SavesEmptyTransactionListAndReturnsFalse()
     {
         WriteCsvFile("all_bad.csv");
-
         SetupGetData([
             ValidDto() with { BillingAmount = "INVALID" },
             ValidDto() with { StatusCode    = "INVALID" }
@@ -372,9 +370,9 @@ public class VcfServicesTests : IDisposable
 
         ImportFile? savedFile = null;
         _repoMock
-            .Setup(r => r.AddAsync(It.IsAny<ImportFile>()))
-            .Callback<ImportFile>(f => savedFile = f)
-            .Returns(Task.CompletedTask);
+            .Setup(r => r.AddAsync(It.IsAny<ImportFile>(), It.IsAny<CancellationToken>()))
+            .Callback<ImportFile, CancellationToken>((f, _) => savedFile = f)
+            .ReturnsAsync(new ImportFile());
 
         using VcfServices sut = BuildSut();
         bool result = await sut.ProcessFileAsync();
@@ -392,10 +390,10 @@ public class VcfServicesTests : IDisposable
     public async Task ProcessFileAsync_FileServiceParseErrors_ReturnsFalseAndReportsErrors()
     {
         WriteCsvFile("bad_headers.csv");
-
         _fileServicesMock
             .Setup(f => f.GetDataFromFile<VcfTransactionDto>(
-                It.IsAny<string>(), It.Is<Encoding>(e => e == Encoding.UTF8), 0, true))
+                It.IsAny<string>(), It.IsAny<Encoding>(),
+                It.IsAny<int>(), It.IsAny<string>(), It.IsAny<bool>()))
             .Returns(new ObjectResult<VcfTransactionDto>
             {
                 ObjectResults = [],
@@ -409,7 +407,7 @@ public class VcfServicesTests : IDisposable
         _fileServicesMock.Verify(
             f => f.HandleFileError(
                 _tempDir, "bad_headers.csv", It.IsAny<string>(), It.IsAny<string>(),
-                It.Is<List<string>>(errs => errs.Any(e => e.Contains("Header mismatch")))),
+                It.Is<List<string>?>(errs => errs != null && errs.Any(e => e.Contains("Header mismatch")))),
             Times.Once);
     }
 
@@ -421,7 +419,6 @@ public class VcfServicesTests : IDisposable
     public async Task ProcessFileAsync_InvalidRequiredDate_SkipsRowAndReportsError()
     {
         WriteCsvFile("bad_date.csv");
-
         // Empty TransactionDate → GetDateFromString returns null → (DateOnly)null throws
         SetupGetData([ValidDto() with { TransactionDate = "" }]);
 
@@ -432,7 +429,7 @@ public class VcfServicesTests : IDisposable
         _fileServicesMock.Verify(
             f => f.HandleFileError(
                 _tempDir, "bad_date.csv", It.IsAny<string>(), It.IsAny<string>(),
-                It.Is<List<string>>(errs => errs.Count >= 1)),
+                It.Is<List<string>?>(errs => errs != null && errs.Count >= 1)),
             Times.Once);
     }
 
@@ -448,9 +445,10 @@ public class VcfServicesTests : IDisposable
 
         VcfTransaction? captured = null;
         _repoMock
-            .Setup(r => r.AddAsync(It.IsAny<ImportFile>()))
-            .Callback<ImportFile>(f => captured = f.ImportFileVcfTransactions.First().VcfTransaction)
-            .Returns(Task.CompletedTask);
+            .Setup(r => r.AddAsync(It.IsAny<ImportFile>(), It.IsAny<CancellationToken>()))
+            .Callback<ImportFile, CancellationToken>((f, _) =>
+                captured = f.ImportFileVcfTransactions.First().VcfTransaction)
+            .ReturnsAsync(new ImportFile());
 
         using VcfServices sut = BuildSut();
         bool result = await sut.ProcessFileAsync();
@@ -462,7 +460,7 @@ public class VcfServicesTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessFileAsync_NullableDatesPopulated_MappedCorrectly()
+    public async Task ProcessFileAsync_NullableDatesPopulated_MappedToCorrectDateOnly()
     {
         WriteCsvFile("dates.csv");
         SetupGetData([ValidDto() with
@@ -473,9 +471,10 @@ public class VcfServicesTests : IDisposable
 
         VcfTransaction? captured = null;
         _repoMock
-            .Setup(r => r.AddAsync(It.IsAny<ImportFile>()))
-            .Callback<ImportFile>(f => captured = f.ImportFileVcfTransactions.First().VcfTransaction)
-            .Returns(Task.CompletedTask);
+            .Setup(r => r.AddAsync(It.IsAny<ImportFile>(), It.IsAny<CancellationToken>()))
+            .Callback<ImportFile, CancellationToken>((f, _) =>
+                captured = f.ImportFileVcfTransactions.First().VcfTransaction)
+            .ReturnsAsync(new ImportFile());
 
         using VcfServices sut = BuildSut();
         await sut.ProcessFileAsync();
@@ -506,9 +505,10 @@ public class VcfServicesTests : IDisposable
 
         VcfTransaction? captured = null;
         _repoMock
-            .Setup(r => r.AddAsync(It.IsAny<ImportFile>()))
-            .Callback<ImportFile>(f => captured = f.ImportFileVcfTransactions.First().VcfTransaction)
-            .Returns(Task.CompletedTask);
+            .Setup(r => r.AddAsync(It.IsAny<ImportFile>(), It.IsAny<CancellationToken>()))
+            .Callback<ImportFile, CancellationToken>((f, _) =>
+                captured = f.ImportFileVcfTransactions.First().VcfTransaction)
+            .ReturnsAsync(new ImportFile());
 
         using VcfServices sut = BuildSut();
         bool result = await sut.ProcessFileAsync();
@@ -536,14 +536,15 @@ public class VcfServicesTests : IDisposable
     [InlineData("YES", false)]
     public async Task ProcessFileAsync_CardholderApproval_MapsCorrectly(string raw, bool expected)
     {
-        WriteCsvFile($"approval.csv");
+        WriteCsvFile("approval.csv");
         SetupGetData([ValidDto(cardholderApproval: raw)]);
 
         VcfTransaction? captured = null;
         _repoMock
-            .Setup(r => r.AddAsync(It.IsAny<ImportFile>()))
-            .Callback<ImportFile>(f => captured = f.ImportFileVcfTransactions.First().VcfTransaction)
-            .Returns(Task.CompletedTask);
+            .Setup(r => r.AddAsync(It.IsAny<ImportFile>(), It.IsAny<CancellationToken>()))
+            .Callback<ImportFile, CancellationToken>((f, _) =>
+                captured = f.ImportFileVcfTransactions.First().VcfTransaction)
+            .ReturnsAsync(new ImportFile());
 
         using VcfServices sut = BuildSut();
         await sut.ProcessFileAsync();
@@ -560,19 +561,20 @@ public class VcfServicesTests : IDisposable
     public async Task ProcessFileAsync_AccountMask_StripsAsterisksAndParsesLastSixDigits()
     {
         WriteCsvFile("mask.csv");
-        SetupGetData([ValidDto()]);  // uses "**********123456"
+        SetupGetData([ValidDto()]);   // uses "**********123456"
 
         VcfTransaction? captured = null;
         _repoMock
-            .Setup(r => r.AddAsync(It.IsAny<ImportFile>()))
-            .Callback<ImportFile>(f => captured = f.ImportFileVcfTransactions.First().VcfTransaction)
-            .Returns(Task.CompletedTask);
+            .Setup(r => r.AddAsync(It.IsAny<ImportFile>(), It.IsAny<CancellationToken>()))
+            .Callback<ImportFile, CancellationToken>((f, _) =>
+                captured = f.ImportFileVcfTransactions.First().VcfTransaction)
+            .ReturnsAsync(new ImportFile());
 
         using VcfServices sut = BuildSut();
         await sut.ProcessFileAsync();
 
         Assert.NotNull(captured);
-        Assert.Equal(123456, captured!.AccountNumberLastSix);
+        Assert.Equal(123456,           captured!.AccountNumberLastSix);
         Assert.Equal("**********123456", captured.AccountNumberMaskfirst10Digits);
     }
 
@@ -590,7 +592,7 @@ public class VcfServicesTests : IDisposable
         _fileServicesMock.Verify(
             f => f.HandleFileError(
                 _tempDir, "mask_bad.csv", It.IsAny<string>(), It.IsAny<string>(),
-                It.Is<List<string>>(errs => errs.Count >= 1)),
+                It.Is<List<string>?>(errs => errs != null && errs.Count >= 1)),
             Times.Once);
     }
 
@@ -606,16 +608,16 @@ public class VcfServicesTests : IDisposable
 
         ImportFile? capturedFile = null;
         _repoMock
-            .Setup(r => r.AddAsync(It.IsAny<ImportFile>()))
-            .Callback<ImportFile>(f => capturedFile = f)
-            .Returns(Task.CompletedTask);
+            .Setup(r => r.AddAsync(It.IsAny<ImportFile>(), It.IsAny<CancellationToken>()))
+            .Callback<ImportFile, CancellationToken>((f, _) => capturedFile = f)
+            .ReturnsAsync(new ImportFile());
 
         using VcfServices sut = BuildSut();
         await sut.ProcessFileAsync();
 
         Assert.NotNull(capturedFile);
-        Assert.Equal("mydata.csv", capturedFile!.ImportFileName);
-        Assert.StartsWith("mydata_",   capturedFile.ArchiveFileName);
-        Assert.EndsWith(".csv",        capturedFile.ArchiveFileName);
+        Assert.Equal("mydata.csv",   capturedFile!.ImportFileName);
+        Assert.StartsWith("mydata_", capturedFile.ArchiveFileName);
+        Assert.EndsWith(".csv",      capturedFile.ArchiveFileName);
     }
 }
