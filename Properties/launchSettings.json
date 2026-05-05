@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "VCFFileImport": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "DOTNET_ENVIRONMENT": "local"
+      }
+    }
+  }
+}
