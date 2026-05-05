@@ -143,7 +143,7 @@ namespace VCFFileImport.Services
         {
             try
             {
-                int.TryParse(dto.AccountNumberMaskfirst10Digits.Replace("*",""), out int AccountNumberLastSix);
+                int AccountNumberLastSix = int.Parse(dto.AccountNumberMaskfirst10Digits.Replace("*", ""));
 
                 VcfTransaction transaction = new()
                 { 
