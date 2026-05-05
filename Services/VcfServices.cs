@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using System.Globalization;
 using System.Text;
 using VCFFileImport.Contracts;
+using VCFFileImport.Exceptions;
 using VCFFileImport.Data;
 using VCFFileImport.Models;
 using VCFFileImport.Models.Database;
@@ -34,7 +35,7 @@ namespace VCFFileImport.Services
 
             if(String.IsNullOrWhiteSpace(_basePath))
             {
-                throw new Exception("BasePath missing");
+                throw new VcfConfigurationException("BasePath is missing from configuration");
             }
         }        
         public async Task<bool> ProcessFileAsync()

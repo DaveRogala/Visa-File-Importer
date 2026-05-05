@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using VCFFileImport.Contracts;
+using VCFFileImport.Exceptions;
 using VCFFileImport.Data;
 using VCFFileImport.Models.Database;
 using VCFFileImport.Repositories;
@@ -34,11 +35,11 @@ if(services != null)
 {
     if(!await services.ProcessFileAsync())
     {
-        throw new Exception("file process failed.  See errors folder");
+        throw new VcfProcessingException("File processing failed. See errors folder.");
     }
 }
 else
 {
     logger.LogCritical("VcfServices failed to start");
-    throw new Exception("VcfServices failed to start");
+    throw new VcfConfigurationException("VcfServices failed to resolve from the service container");
 }
