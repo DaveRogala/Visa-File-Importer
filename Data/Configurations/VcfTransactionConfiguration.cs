@@ -28,7 +28,7 @@ namespace VCFFileImport.Data.Configurations
             builder.Property(x => x.CompanyName).HasMaxLength(50);
             builder.Property(x => x.BillingAmount).HasPrecision(18, 2);
 
-            builder.HasIndex(x => x.TransactionReferenceNumber).IsUnique();
+            builder.HasIndex(x => x.TransactionReferenceNumber);
             builder.HasIndex(x => new { x.LastName, x.FirstName });
             builder.HasIndex(x => x.EmployeeID);
             builder.HasIndex(x => x.TransactionDate);
