@@ -149,11 +149,11 @@ namespace VCFFileImport.Services
                 { 
                     AccountNumberMaskfirst10Digits = dto.AccountNumberMaskfirst10Digits,
                     AccountNumberLastSix = AccountNumberLastSix,
-                    AccountOpenDate = (DateTime)GetDateFromString(dto.AccountOpenDate),
+                    AccountOpenDate = (DateOnly)GetDateFromString(dto.AccountOpenDate),
                     AccountCloseDate = GetDateFromString(dto.AccountCloseDate),
                     BillingAmount = Decimal.Parse(dto.BillingAmount),
-                    TransactionDate = (DateTime)GetDateFromString(dto.TransactionDate),
-                    PostingDate = (DateTime)GetDateFromString(dto.PostingDate),
+                    TransactionDate = (DateOnly)GetDateFromString(dto.TransactionDate),
+                    PostingDate = (DateOnly)GetDateFromString(dto.PostingDate),
                     TransactionTypeCode = dto.TransactionTypeCode,
                     CommodityCode = String.IsNullOrWhiteSpace(dto.CommodityCode) ? null : dto.CommodityCode,
                     FirstName = dto.FirstName,
@@ -162,7 +162,7 @@ namespace VCFFileImport.Services
                     TransactionReferenceNumber = dto.TransactionReferenceNumber,
                     LastCreditLimitChangeDate = GetDateFromString(dto.LastCreditLimitChangeDate),
                     StatusCode = int.Parse(dto.StatusCode),
-                    StatusDate = (DateTime)GetDateFromString(dto.StatusDate),
+                    StatusDate = (DateOnly)GetDateFromString(dto.StatusDate),
                     SupplierName = String.IsNullOrWhiteSpace(dto.SupplierName) ? null : dto.SupplierName,
                     MerchantCategoryCode = int.Parse(dto.MerchantCategoryCode),
                     PurchaseIdentification = String.IsNullOrWhiteSpace(dto.PurchaseIdentification) ? null : dto.PurchaseIdentification,
@@ -180,17 +180,16 @@ namespace VCFFileImport.Services
                 throw;
             }
         }
-        private DateTime? GetDateFromString(string dateString)
+        private DateOnly? GetDateFromString(string dateString)
         {
             try
             {
                 string datePattern = "MMddyyyy";
-                if(DateTime.TryParseExact(dateString,datePattern, null, DateTimeStyles.None, out DateTime date))
-                {  
-                    return date; 
+                if (DateOnly.TryParseExact(dateString, datePattern, null, DateTimeStyles.None, out DateOnly date))
+                {
+                    return date;
                 }
                 return null;
-
             }
             catch (Exception ex)
             {
